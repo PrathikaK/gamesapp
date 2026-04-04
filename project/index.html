@@ -1,0 +1,815 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>For Loop Beach Balloon Game</title>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<style>
+*{margin:0;padding:0;box-sizing:border-box;}
+body{font-family:'Segoe UI',system-ui,sans-serif;overflow:hidden;height:100vh;background:#87CEEB;}
+
+/* ── Animations ── */
+@keyframes floatBalloon{0%,100%{transform:translateY(0) rotate(-2deg)}50%{transform:translateY(-18px) rotate(2deg)}}
+@keyframes popBalloon{0%{transform:scale(1);opacity:1}50%{transform:scale(1.6);opacity:.6}100%{transform:scale(0);opacity:0}}
+@keyframes wave{0%,100%{transform:translateX(0)}50%{transform:translateX(-40px)}}
+@keyframes cloudDrift{0%{transform:translateX(-200px)}100%{transform:translateX(calc(100vw + 200px))}}
+@keyframes fadeIn{from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:translateY(0)}}
+@keyframes pulse{0%,100%{transform:scale(1)}50%{transform:scale(1.08)}}
+@keyframes confettiFall{0%{transform:translateY(-10px) rotate(0deg);opacity:1}100%{transform:translateY(400px) rotate(720deg);opacity:0}}
+@keyframes glowPulse{0%,100%{box-shadow:0 0 8px rgba(255,200,0,.4)}50%{box-shadow:0 0 24px rgba(255,200,0,.8)}}
+@keyframes shootUp{0%{transform:translateY(0) scale(1)}50%{transform:translateY(-30px) scale(1.2)}100%{transform:translateY(0) scale(1)}}
+@keyframes slideIn{from{opacity:0;transform:translateX(30px)}to{opacity:1;transform:translateX(0)}}
+@keyframes bounceIn{0%{transform:scale(0)}60%{transform:scale(1.15)}100%{transform:scale(1)}}
+@keyframes stepHighlight{0%{background:rgba(255,220,0,.15)}50%{background:rgba(255,220,0,.45)}100%{background:rgba(255,220,0,.15)}}
+@keyframes successGlow{0%,100%{box-shadow:0 0 10px rgba(46,204,113,.3)}50%{box-shadow:0 0 30px rgba(46,204,113,.7)}}
+@keyframes errorShake{0%,100%{transform:translateX(0)}20%,60%{transform:translateX(-6px)}40%,80%{transform:translateX(6px)}}
+@keyframes typingCursor{0%,100%{border-right-color:transparent}50%{border-right-color:#fff}}
+
+.balloon-float{animation:floatBalloon 3s ease-in-out infinite}
+.balloon-pop{animation:popBalloon .4s ease-out forwards}
+.cloud{animation:cloudDrift 35s linear infinite}
+.cloud2{animation:cloudDrift 50s linear infinite}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const {useState, useEffect, useRef, useCallback, useMemo} = React;
+
+/* ══════════════════ AUDIO ENGINE ══════════════════ */
+const AudioEngine = (() => {
+  let ctx = null;
+  const getCtx = () => { if(!ctx) ctx = new (window.AudioContext||window.webkitAudioContext)(); return ctx; };
+  const play = (freq, type, dur, vol=.25) => {
+    try {
+      const c = getCtx(), o = c.createOscillator(), g = c.createGain();
+      o.type = type; o.frequency.value = freq;
+      g.gain.setValueAtTime(vol, c.currentTime);
+      g.gain.exponentialRampToValueAtTime(.001, c.currentTime+dur);
+      o.connect(g); g.connect(c.destination);
+      o.start(); o.stop(c.currentTime+dur);
+    } catch(e){}
+  };
+  return {
+    pop:     () => { play(800,'sine',.15,.3); setTimeout(()=>play(400,'triangle',.1,.15),50); },
+    success: () => { [523,659,784].forEach((f,i)=>setTimeout(()=>play(f,'sine',.3,.2),i*120)); },
+    error:   () => { play(200,'sawtooth',.3,.15); setTimeout(()=>play(150,'sawtooth',.3,.15),150); },
+    tick:    () => play(1000,'sine',.05,.1),
+    start:   () => { play(440,'sine',.15,.2); setTimeout(()=>play(660,'sine',.2,.2),100); },
+    complete:() => { [523,587,659,698,784,880].forEach((f,i)=>setTimeout(()=>play(f,'triangle',.25,.2),i*100)); },
+    click:   () => play(600,'sine',.06,.1),
+  };
+})();
+
+/* ══════════════════ VOICE ENGINE ══════════════════ */
+const Voice = (() => {
+  let voice = null, ready = false;
+  const prefs = [/Google US/i,/Samantha/i,/Karen/i,/Microsoft.*Aria/i,/Microsoft.*Jenny/i,/en.US/i,/en.GB/i,/English/i];
+  const pickVoice = () => {
+    const voices = speechSynthesis.getVoices();
+    for(const p of prefs){ const v = voices.find(v=>p.test(v.name+v.lang)); if(v){voice=v;return;} }
+    voice = voices[0] || null;
+  };
+  speechSynthesis.onvoiceschanged = pickVoice;
+  setTimeout(pickVoice, 200);
+  return {
+    speak: (text, rate=1) => {
+      try {
+        speechSynthesis.cancel();
+        const u = new SpeechSynthesisUtterance(text);
+        if(voice) u.voice = voice;
+        u.rate = rate; u.pitch = 1.05; u.volume = .85;
+        speechSynthesis.speak(u);
+      } catch(e){}
+    },
+    stop: () => { try{speechSynthesis.cancel();}catch(e){} }
+  };
+})();
+
+/* ══════════════════ CONSTANTS ══════════════════ */
+const BALLOON_COLORS = ['#FF6B6B','#4ECDC4','#45B7D1','#96CEB4','#FFEAA7','#DDA0DD','#FF8C69','#98D8C8','#F7DC6F','#BB8FCE','#85C1E9','#F1948A','#82E0AA','#F8C471','#D7BDE2'];
+
+const CHALLENGES = [
+  { id:1, text:"Make the loop run exactly 5 times", answer:5, hint:"Change the condition to i <= 5" },
+  { id:2, text:"Double the balloons to 20", answer:20, hint:"Change 10 to 20 in the condition" },
+  { id:3, text:"Set balloons to 15", answer:15, hint:"Replace the number after <= with 15" },
+  { id:4, text:"Make only 3 balloons appear", answer:3, hint:"The condition should be i <= 3" },
+  { id:5, text:"Create a huge party with 25 balloons!", answer:25, hint:"Change the loop limit to 25" },
+];
+
+const LOOP_STEPS = ['init','condition','action','increment','end'];
+const STEP_LABELS = {init:'Initialization',condition:'Condition Check',action:'Execute Body',increment:'Increment i',end:'Loop Complete'};
+const STEP_COLORS = {init:'#3498db',condition:'#e67e22',action:'#2ecc71',increment:'#9b59b6',end:'#e74c3c'};
+
+/* ══════════════════ COMPONENTS ══════════════════ */
+
+/* ── Beach Background ── */
+function BeachBG() {
+  return React.createElement('div',{style:{position:'absolute',inset:0,overflow:'hidden',pointerEvents:'none'}},
+    /* Sky gradient */
+    React.createElement('div',{style:{position:'absolute',top:0,left:0,right:0,height:'65%',background:'linear-gradient(180deg,#4A90D9 0%,#87CEEB 40%,#B4E4FF 100%)'}}),
+    /* Sun */
+    React.createElement('div',{style:{position:'absolute',top:30,right:60,width:80,height:80,borderRadius:'50%',background:'radial-gradient(circle,#FFE66D,#FFA502)',boxShadow:'0 0 60px rgba(255,165,2,.5)'}}),
+    /* Clouds */
+    ...[{t:40,s:1,d:0},{t:90,s:.7,d:-12},{t:60,s:.85,d:-25}].map((c,i)=>
+      React.createElement('div',{key:'c'+i,className:i===1?'cloud2':'cloud',style:{position:'absolute',top:c.t,left:0,width:120*c.s,height:40*c.s,background:'rgba(255,255,255,.85)',borderRadius:40,animationDelay:c.d+'s',filter:'blur(1px)'}},
+        React.createElement('div',{style:{position:'absolute',top:-15*c.s,left:20*c.s,width:60*c.s,height:60*c.s,background:'rgba(255,255,255,.85)',borderRadius:'50%'}}),
+        React.createElement('div',{style:{position:'absolute',top:-25*c.s,left:45*c.s,width:50*c.s,height:50*c.s,background:'rgba(255,255,255,.85)',borderRadius:'50%'}})
+      )
+    ),
+    /* Sea */
+    React.createElement('div',{style:{position:'absolute',bottom:0,left:0,right:0,height:'38%',background:'linear-gradient(180deg,#5DADE2 0%,#2E86C1 50%,#1A5276 100%)'}},
+      React.createElement('div',{style:{position:'absolute',top:0,left:0,right:0,height:12,background:'linear-gradient(180deg,rgba(255,255,255,.4),transparent)',animation:'wave 4s ease-in-out infinite'}})
+    ),
+    /* Sand */
+    React.createElement('div',{style:{position:'absolute',bottom:0,left:0,right:0,height:'12%',background:'linear-gradient(180deg,#F5CBA7,#E8B98A)',borderTop:'3px solid #D4A76A'}}),
+    /* Palm tree */
+    React.createElement('div',{style:{position:'absolute',bottom:'10%',left:30}},
+      React.createElement('div',{style:{width:12,height:120,background:'linear-gradient(90deg,#8B6914,#A0782C,#8B6914)',borderRadius:6,margin:'0 auto'}}),
+      ...[{r:-30,s:.9},{r:15,s:1},{r:-60,s:.75},{r:40,s:.8}].map((l,i)=>
+        React.createElement('div',{key:'l'+i,style:{position:'absolute',top:-10,left:6,width:70*l.s,height:16,background:'#27AE60',borderRadius:'50%',transform:`rotate(${l.r}deg)`,transformOrigin:'left center',opacity:.85}})
+      )
+    )
+  );
+}
+
+/* ── Single Balloon ── */
+function Balloon({color, x, y, size=50, popping=false, onClick, label, delay=0}) {
+  const [visible, setVisible] = useState(true);
+  useEffect(()=>{ if(popping) setTimeout(()=>setVisible(false), 400); },[popping]);
+  if(!visible) return null;
+  return React.createElement('div',{
+    onClick,
+    style:{
+      position:'absolute', left:x, top:y, width:size, height:size*1.25,
+      cursor:onClick?'crosshair':'default', zIndex:10, transition:'all .3s',
+      animation: popping ? 'popBalloon .4s ease-out forwards' : `floatBalloon ${2.5+delay}s ease-in-out infinite`,
+      animationDelay: delay+'s',
+    }
+  },
+    /* Balloon body */
+    React.createElement('div',{style:{width:'100%',height:'100%',borderRadius:'50% 50% 50% 50% / 40% 40% 60% 60%',background:`radial-gradient(circle at 35% 30%, ${color}dd, ${color})`,boxShadow:`inset -4px -4px 8px rgba(0,0,0,.15), 2px 4px 12px rgba(0,0,0,.2)`,position:'relative'}},
+      /* Shine */
+      React.createElement('div',{style:{position:'absolute',top:'18%',left:'25%',width:'22%',height:'30%',background:'rgba(255,255,255,.45)',borderRadius:'50%',transform:'rotate(-20deg)'}})
+    ),
+    /* Knot */
+    React.createElement('div',{style:{width:8,height:8,background:color,margin:'0 auto',clipPath:'polygon(50% 0%, 0% 100%, 100% 100%)'}}),
+    /* String */
+    React.createElement('div',{style:{width:2,height:30,background:'rgba(0,0,0,.25)',margin:'0 auto'}}),
+    /* Label */
+    label && React.createElement('div',{style:{position:'absolute',top:'30%',left:'50%',transform:'translateX(-50%)',color:'#fff',fontWeight:700,fontSize:14,textShadow:'1px 1px 2px rgba(0,0,0,.4)',pointerEvents:'none'}},label)
+  );
+}
+
+/* ── Shopkeeper ── */
+function Shopkeeper({mood='happy', message=''}) {
+  const faces = {happy:'😊',excited:'🤩',thinking:'🤔',sad:'😢',proud:'😎',celebrating:'🥳'};
+  return React.createElement('div',{style:{position:'absolute',bottom:'12%',left:100,display:'flex',flexDirection:'column',alignItems:'center',zIndex:20}},
+    message && React.createElement('div',{style:{
+      background:'rgba(255,255,255,.95)',padding:'8px 14px',borderRadius:16,marginBottom:8,
+      maxWidth:200,fontSize:13,lineHeight:1.4,boxShadow:'0 3px 12px rgba(0,0,0,.15)',
+      animation:'fadeIn .4s ease', position:'relative',textAlign:'center'
+    }},
+      message,
+      React.createElement('div',{style:{position:'absolute',bottom:-6,left:'50%',transform:'translateX(-50%) rotate(45deg)',width:12,height:12,background:'rgba(255,255,255,.95)'}})
+    ),
+    React.createElement('div',{style:{fontSize:48,filter:'drop-shadow(2px 4px 6px rgba(0,0,0,.2))',animation:'pulse 2s ease-in-out infinite'}}, faces[mood]||'😊'),
+    React.createElement('div',{style:{fontSize:11,fontWeight:600,color:'#5D4E37',marginTop:2,background:'rgba(255,255,255,.7)',padding:'2px 8px',borderRadius:8}}, 'Shopkeeper')
+  );
+}
+
+/* ── Player Character ── */
+function Player({shooting}) {
+  return React.createElement('div',{style:{position:'absolute',bottom:'12%',right:80,zIndex:20,textAlign:'center'}},
+    React.createElement('div',{style:{fontSize:44,animation:shooting?'shootUp .3s ease':'none',filter:'drop-shadow(2px 4px 6px rgba(0,0,0,.2))'}}, '🧑‍🎓'),
+    React.createElement('div',{style:{fontSize:11,fontWeight:600,color:'#2C3E50',marginTop:2,background:'rgba(255,255,255,.7)',padding:'2px 8px',borderRadius:8}}, 'You')
+  );
+}
+
+/* ── Flow Diagram ── */
+function FlowDiagram({currentStep, iteration, total}) {
+  const nodes = [
+    {id:'init',label:'let i = 1',icon:'🔧'},
+    {id:'condition',label:`i <= ${total}`,icon:'❓'},
+    {id:'action',label:'Shoot balloon!',icon:'🎯'},
+    {id:'increment',label:'i++',icon:'➕'},
+    {id:'end',label:'Loop Done!',icon:'🏁'},
+  ];
+  return React.createElement('div',{style:{display:'flex',flexDirection:'column',alignItems:'center',gap:4,padding:'8px 0'}},
+    nodes.map((node,idx) => {
+      const active = currentStep === node.id;
+      const done = LOOP_STEPS.indexOf(node.id) < LOOP_STEPS.indexOf(currentStep);
+      return React.createElement(React.Fragment,{key:node.id},
+        React.createElement('div',{style:{
+          display:'flex',alignItems:'center',gap:8,padding:'6px 12px',borderRadius:10,
+          background: active ? STEP_COLORS[node.id]+'22' : done ? '#f0f0f0' : '#fafafa',
+          border: `2px solid ${active ? STEP_COLORS[node.id] : done ? '#ccc' : '#e0e0e0'}`,
+          width:'100%',transition:'all .3s',
+          animation: active ? 'stepHighlight 1.5s ease infinite' : 'none',
+          boxShadow: active ? `0 0 12px ${STEP_COLORS[node.id]}44` : 'none',
+        }},
+          React.createElement('span',{style:{fontSize:16}}, node.icon),
+          React.createElement('span',{style:{fontSize:12,fontWeight:active?700:500,color:active?STEP_COLORS[node.id]:'#666',fontFamily:'monospace'}}, node.label),
+          active && React.createElement('span',{style:{marginLeft:'auto',fontSize:10,background:STEP_COLORS[node.id],color:'#fff',padding:'1px 6px',borderRadius:8,fontWeight:700}}, '◄ HERE')
+        ),
+        idx < nodes.length-1 && React.createElement('div',{style:{
+          width:2,height:12,
+          background: (done||active) ? STEP_COLORS[nodes[idx].id] : '#ddd',
+          transition:'all .3s',
+        }})
+      );
+    })
+  );
+}
+
+/* ── Live Code Panel ── */
+function CodePanel({total, currentStep, iteration, editMode, code, onCodeChange, onRunCode, codeError, codeSuccess}) {
+  const lines = [
+    {text:`for (let i = 1; i <= ${total}; i++) {`, step:'init', parts:[
+      {t:'for',c:'#c678dd'},{t:' (',c:'#abb2bf'},{t:'let',c:'#c678dd'},{t:' i = ',c:'#abb2bf'},{t:'1',c:'#d19a66'},
+      {t:'; i ',c:'#abb2bf'},{t:'<=',c:'#56b6c2'},{t:` ${total}`,c:'#d19a66'},{t:'; i',c:'#abb2bf'},
+      {t:'++',c:'#56b6c2'},{t:') {',c:'#abb2bf'}
+    ]},
+    {text:'  shootBalloon(i);', step:'action', parts:[
+      {t:'  ',c:''},{t:'shootBalloon',c:'#61afef'},{t:'(',c:'#abb2bf'},{t:'i',c:'#e06c75'},{t:');',c:'#abb2bf'}
+    ]},
+    {text:'  score += 10;', step:'action', parts:[
+      {t:'  ',c:''},{t:'score',c:'#e06c75'},{t:' += ',c:'#56b6c2'},{t:'10',c:'#d19a66'},{t:';',c:'#abb2bf'}
+    ]},
+    {text:'}', step:'increment', parts:[{t:'}',c:'#abb2bf'}]},
+  ];
+
+  return React.createElement('div',{style:{
+    background:'#282c34',borderRadius:12,overflow:'hidden',
+    border: codeError ? '2px solid #e74c3c' : codeSuccess ? '2px solid #2ecc71' : '2px solid #3a3f4b',
+    animation: codeError ? 'errorShake .4s ease' : codeSuccess ? 'successGlow 1.5s ease infinite' : 'none',
+    transition:'all .3s'
+  }},
+    /* Header */
+    React.createElement('div',{style:{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'6px 12px',background:'#21252b',borderBottom:'1px solid #3a3f4b'}},
+      React.createElement('div',{style:{display:'flex',gap:5}},
+        ...[{c:'#ff5f57'},{c:'#ffbd2e'},{c:'#27c93f'}].map((d,i)=>
+          React.createElement('div',{key:i,style:{width:9,height:9,borderRadius:'50%',background:d.c}})
+        )
+      ),
+      React.createElement('span',{style:{color:'#636d83',fontSize:11,fontFamily:'monospace'}}, editMode ? '✏️ Edit Mode' : '▶ loop.js'),
+    ),
+    /* Code body */
+    !editMode ? React.createElement('div',{style:{padding:'10px 14px',fontFamily:'"Fira Code",monospace',fontSize:13,lineHeight:1.7}},
+      lines.map((line,li) => {
+        const active = (line.step === currentStep) || (currentStep === 'init' && li === 0) || (currentStep === 'increment' && li === 3);
+        return React.createElement('div',{key:li,style:{
+          padding:'2px 6px',borderRadius:4, borderLeft: active?`3px solid ${STEP_COLORS[line.step]||'#fff'}`:'3px solid transparent',
+          background: active ? 'rgba(255,255,255,.07)' : 'transparent', transition:'all .3s',
+        }},
+          line.parts.map((p,pi) => React.createElement('span',{key:pi,style:{color:p.c||'#abb2bf'}},p.t))
+        );
+      }),
+      /* Iteration info */
+      currentStep && currentStep !== 'end' && React.createElement('div',{style:{marginTop:8,padding:'4px 8px',background:'rgba(255,255,255,.05)',borderRadius:6,color:'#636d83',fontSize:11,fontFamily:'monospace'}},
+        `// i = ${iteration} | Condition: ${iteration} <= ${total} → ${iteration<=total?'✅ true':'❌ false'}`
+      )
+    )
+    : /* Edit mode */
+    React.createElement('div',{style:{padding:'10px 14px'}},
+      React.createElement('div',{style:{color:'#636d83',fontSize:11,marginBottom:6,fontFamily:'monospace'}}, '// Edit the loop below and press Run:'),
+      React.createElement('textarea',{
+        value: code,
+        onChange: e => onCodeChange(e.target.value),
+        spellCheck: false,
+        style:{
+          width:'100%',height:60,background:'#1e2127',color:'#e06c75',border:'1px solid #3a3f4b',
+          borderRadius:6,padding:8,fontFamily:'"Fira Code",monospace',fontSize:13,resize:'none',
+          outline:'none',lineHeight:1.6
+        }
+      }),
+      React.createElement('button',{onClick:onRunCode,style:{
+        marginTop:6,padding:'6px 18px',background:'linear-gradient(135deg,#2ecc71,#27ae60)',
+        color:'#fff',border:'none',borderRadius:8,cursor:'pointer',fontWeight:700,fontSize:13,
+        boxShadow:'0 3px 10px rgba(46,204,113,.3)',transition:'all .2s'
+      }}, '▶ Run Code'),
+      codeError && React.createElement('div',{style:{marginTop:6,color:'#e74c3c',fontSize:12,fontFamily:'monospace',background:'rgba(231,76,60,.1)',padding:'4px 8px',borderRadius:6}}, '❌ ' + codeError),
+      codeSuccess && React.createElement('div',{style:{marginTop:6,color:'#2ecc71',fontSize:12,fontFamily:'monospace',background:'rgba(46,204,113,.1)',padding:'4px 8px',borderRadius:6}}, '✅ ' + codeSuccess),
+    )
+  );
+}
+
+/* ── Stats HUD ── */
+function StatsHUD({iteration, total, score, balloonsLeft, speed}) {
+  const stats = [
+    {label:'Iteration (i)', value:iteration, color:'#3498db', icon:'🔄'},
+    {label:'Balloons Left', value:balloonsLeft, color:'#e74c3c', icon:'🎈'},
+    {label:'Score', value:score, color:'#2ecc71', icon:'⭐'},
+    {label:'Total Shots', value:Math.max(0,iteration-1), color:'#9b59b6', icon:'🎯'},
+  ];
+  return React.createElement('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:6}},
+    stats.map(s => React.createElement('div',{key:s.label,style:{
+      background:'rgba(255,255,255,.92)',padding:'8px 10px',borderRadius:10,
+      borderLeft:`4px solid ${s.color}`,boxShadow:'0 2px 8px rgba(0,0,0,.08)',
+    }},
+      React.createElement('div',{style:{fontSize:10,color:'#888',fontWeight:600}}, s.icon + ' ' + s.label),
+      React.createElement('div',{style:{fontSize:20,fontWeight:800,color:s.color,fontFamily:'monospace'}}, s.value)
+    ))
+  );
+}
+
+/* ── Challenge Panel ── */
+function ChallengePanel({challenge, onComplete}) {
+  const [input, setInput] = useState('');
+  const [feedback, setFeedback] = useState(null);
+  const [showHint, setShowHint] = useState(false);
+  const check = () => {
+    const val = parseInt(input);
+    if(val === challenge.answer) {
+      setFeedback({ok:true, msg:`Correct! Loop now runs ${val} times!`});
+      AudioEngine.success();
+      Voice.speak(`Excellent! The loop will now run ${val} times!`);
+      setTimeout(() => onComplete(val), 1500);
+    } else {
+      setFeedback({ok:false, msg: isNaN(val) ? 'Enter a valid number' : `Not quite. That would run ${val} times.`});
+      AudioEngine.error();
+    }
+  };
+  return React.createElement('div',{style:{
+    background:'linear-gradient(135deg,#fff9e6,#fff3cd)',padding:14,borderRadius:14,
+    border:'2px solid #f0c040',animation:'bounceIn .5s ease',boxShadow:'0 4px 20px rgba(240,192,64,.3)'
+  }},
+    React.createElement('div',{style:{display:'flex',alignItems:'center',gap:6,marginBottom:8}},
+      React.createElement('span',{style:{fontSize:22}}, '🧠'),
+      React.createElement('span',{style:{fontWeight:800,fontSize:15,color:'#8B6914'}}, 'CHALLENGE')
+    ),
+    React.createElement('div',{style:{fontSize:14,color:'#5D4E37',marginBottom:10,lineHeight:1.5}}, challenge.text),
+    React.createElement('div',{style:{display:'flex',gap:6,alignItems:'center'}},
+      React.createElement('code',{style:{background:'#282c34',color:'#e06c75',padding:'4px 8px',borderRadius:6,fontSize:12,fontFamily:'monospace'}},
+        'for (let i = 1; i <= '
+      ),
+      React.createElement('input',{
+        type:'number', value:input, onChange:e=>setInput(e.target.value),
+        onKeyDown:e=>e.key==='Enter'&&check(),
+        placeholder:'?',
+        style:{width:50,textAlign:'center',padding:'4px 6px',border:'2px solid #f0c040',borderRadius:6,fontSize:14,fontWeight:700,fontFamily:'monospace',outline:'none'}
+      }),
+      React.createElement('code',{style:{background:'#282c34',color:'#e06c75',padding:'4px 8px',borderRadius:6,fontSize:12,fontFamily:'monospace'}},
+        '; i++)'
+      )
+    ),
+    React.createElement('div',{style:{display:'flex',gap:8,marginTop:10}},
+      React.createElement('button',{onClick:check,style:{padding:'6px 16px',background:'linear-gradient(135deg,#2ecc71,#27ae60)',color:'#fff',border:'none',borderRadius:8,cursor:'pointer',fontWeight:700,fontSize:13}}, '✓ Submit'),
+      React.createElement('button',{onClick:()=>setShowHint(!showHint),style:{padding:'6px 14px',background:'rgba(0,0,0,.05)',border:'1px solid #ccc',borderRadius:8,cursor:'pointer',fontSize:12,color:'#888'}}, showHint?'Hide Hint':'💡 Hint'),
+    ),
+    showHint && React.createElement('div',{style:{marginTop:8,padding:'6px 10px',background:'rgba(255,255,255,.7)',borderRadius:8,fontSize:12,color:'#8B6914',fontStyle:'italic'}}, '💡 ' + challenge.hint),
+    feedback && React.createElement('div',{style:{
+      marginTop:8,padding:'8px 12px',borderRadius:8,fontSize:13,fontWeight:600,
+      background: feedback.ok ? 'rgba(46,204,113,.15)' : 'rgba(231,76,60,.1)',
+      color: feedback.ok ? '#27ae60' : '#e74c3c',
+      animation: feedback.ok ? 'successGlow 1s ease' : 'errorShake .4s ease',
+    }}, feedback.msg),
+  );
+}
+
+/* ── Confetti Effect ── */
+function Confetti() {
+  const pieces = useMemo(()=> Array.from({length:40},(_,i)=>({
+    id:i, x:Math.random()*100, color:BALLOON_COLORS[i%BALLOON_COLORS.length],
+    delay:Math.random()*2, size:6+Math.random()*8, duration:2+Math.random()*2
+  })),[]);
+  return React.createElement('div',{style:{position:'fixed',inset:0,pointerEvents:'none',zIndex:100}},
+    pieces.map(p => React.createElement('div',{key:p.id,style:{
+      position:'absolute',left:p.x+'%',top:-10,width:p.size,height:p.size,
+      background:p.color,borderRadius:Math.random()>.5?'50%':'2px',
+      animation:`confettiFall ${p.duration}s ease ${p.delay}s forwards`,
+      transform:`rotate(${Math.random()*360}deg)`
+    }}))
+  );
+}
+
+/* ══════════════════ MAIN APP ══════════════════ */
+function App() {
+  /* ── State ── */
+  const [mode, setMode] = useState('basic');       // basic | custom | challenge
+  const [totalBalloons, setTotalBalloons] = useState(10);
+  const [balloons, setBalloons] = useState([]);
+  const [iteration, setIteration] = useState(1);
+  const [score, setScore] = useState(0);
+  const [currentStep, setCurrentStep] = useState(null);
+  const [playing, setPlaying] = useState(false);
+  const [autoPlay, setAutoPlay] = useState(false);
+  const [gameComplete, setGameComplete] = useState(false);
+  const [shooting, setShooting] = useState(false);
+  const [shopMsg, setShopMsg] = useState("Welcome! Let's learn for loops!");
+  const [shopMood, setShopMood] = useState('happy');
+  const [showConfetti, setShowConfetti] = useState(false);
+  const [speed, setSpeed] = useState(1500);
+  const [editMode, setEditMode] = useState(false);
+  const [code, setCode] = useState('for (let i = 1; i <= 10; i++)');
+  const [codeError, setCodeError] = useState('');
+  const [codeSuccess, setCodeSuccess] = useState('');
+  const [showChallenge, setShowChallenge] = useState(false);
+  const [currentChallenge, setCurrentChallenge] = useState(null);
+  const [challengeIdx, setChallengeIdx] = useState(0);
+  const [history, setHistory] = useState([]);
+  const timerRef = useRef(null);
+  const [voiceOn, setVoiceOn] = useState(true);
+
+  /* ── Generate Balloons ── */
+  const generateBalloons = useCallback((count) => {
+    const bList = [];
+    const cols = Math.min(count, 6);
+    const rows = Math.ceil(count / cols);
+    for(let i = 0; i < count; i++) {
+      const col = i % cols;
+      const row = Math.floor(i / cols);
+      bList.push({
+        id: i, color: BALLOON_COLORS[i % BALLOON_COLORS.length],
+        x: 120 + col * 70 + (row%2)*30,
+        y: 40 + row * 85,
+        popping: false, popped: false,
+        delay: Math.random()*2,
+        label: i+1
+      });
+    }
+    return bList;
+  },[]);
+
+  /* ── Initialize Game ── */
+  const initGame = useCallback((count=totalBalloons) => {
+    if(timerRef.current) clearInterval(timerRef.current);
+    setTotalBalloons(count);
+    setBalloons(generateBalloons(count));
+    setIteration(1);
+    setScore(0);
+    setCurrentStep(null);
+    setPlaying(false);
+    setAutoPlay(false);
+    setGameComplete(false);
+    setShooting(false);
+    setShopMsg(`I have ${count} balloons! Ready to learn for loops?`);
+    setShopMood('happy');
+    setShowConfetti(false);
+    setEditMode(false);
+    setCode(`for (let i = 1; i <= ${count}; i++)`);
+    setCodeError('');
+    setCodeSuccess('');
+    setShowChallenge(false);
+    setHistory([]);
+    Voice.stop();
+  },[totalBalloons, generateBalloons]);
+
+  useEffect(() => { initGame(10); }, []);
+
+  /* ── Execute One Step of the Loop ── */
+  const executeStep = useCallback(() => {
+    setCurrentStep(prev => {
+      const curIdx = prev ? LOOP_STEPS.indexOf(prev) : -1;
+      const nextIdx = curIdx + 1;
+
+      if(nextIdx === 0) { /* init */
+        AudioEngine.tick();
+        if(voiceOn) Voice.speak(`Initializing: let i equals 1`, 1.1);
+        setShopMsg("Starting the loop! i = 1");
+        setShopMood('excited');
+        setHistory(h => [...h, {step:'init',i:1,msg:'Loop initialized: let i = 1'}]);
+        return 'init';
+      }
+      if(nextIdx === 1) { /* condition */
+        AudioEngine.tick();
+        const cond = iteration <= totalBalloons;
+        if(voiceOn) Voice.speak(`Checking condition: is ${iteration} less than or equal to ${totalBalloons}? ${cond?'Yes!':'No, loop ends.'}`, 1.1);
+        setShopMsg(cond ? `i=${iteration} ≤ ${totalBalloons}? Yes! ✅` : `i=${iteration} ≤ ${totalBalloons}? No! ❌ Loop ends!`);
+        setHistory(h => [...h, {step:'condition',i:iteration,msg:`Condition: ${iteration} <= ${totalBalloons} → ${cond}`}]);
+        if(!cond) {
+          setGameComplete(true);
+          setPlaying(false);
+          setAutoPlay(false);
+          setShowConfetti(true);
+          setShopMood('celebrating');
+          setShopMsg(`All ${totalBalloons} balloons popped! 🎉`);
+          AudioEngine.complete();
+          if(voiceOn) Voice.speak(`Loop complete! You popped all ${totalBalloons} balloons! Amazing work!`);
+          setTimeout(() => {
+            if(mode === 'challenge') {
+              const ch = CHALLENGES[challengeIdx % CHALLENGES.length];
+              setCurrentChallenge(ch);
+              setShowChallenge(true);
+            } else if(mode === 'basic') {
+              setShowChallenge(true);
+              setCurrentChallenge({id:0, text:"Great job! Now try editing the loop. How many balloons do you want?", answer:null, hint:"Type any number between 1 and 30"});
+            }
+          }, 2500);
+          return 'end';
+        }
+        return 'condition';
+      }
+      if(nextIdx === 2) { /* action */
+        AudioEngine.pop();
+        setShooting(true);
+        setTimeout(() => setShooting(false), 300);
+        setBalloons(prev => prev.map((b,idx) => idx === iteration-1 ? {...b, popping:true} : b));
+        setTimeout(() => {
+          setBalloons(prev => prev.map((b,idx) => idx === iteration-1 ? {...b, popped:true} : b));
+        }, 400);
+        setScore(s => s + 10);
+        if(voiceOn) Voice.speak(`Iteration ${iteration}: Pop! Balloon ${iteration} shot!`, 1.15);
+        setShopMsg(`🎯 Balloon ${iteration} popped! Score +10`);
+        setShopMood('excited');
+        setHistory(h => [...h, {step:'action',i:iteration,msg:`Shot balloon ${iteration}! Score +10`}]);
+        return 'action';
+      }
+      if(nextIdx === 3) { /* increment */
+        AudioEngine.tick();
+        const next = iteration + 1;
+        if(voiceOn) Voice.speak(`Incrementing: i becomes ${next}`, 1.1);
+        setShopMsg(`i++ → i is now ${next}`);
+        setShopMood('thinking');
+        setHistory(h => [...h, {step:'increment',i:iteration, msg:`i++ → i = ${next}`}]);
+        setIteration(next);
+        return 'increment';
+      }
+      /* after increment, go back to condition */
+      return null; /* reset cycle */
+    });
+  },[iteration, totalBalloons, voiceOn, mode, challengeIdx]);
+
+  /* ── Auto Play Timer ── */
+  useEffect(() => {
+    if(autoPlay && playing && !gameComplete) {
+      timerRef.current = setInterval(() => {
+        executeStep();
+      }, speed);
+      return () => clearInterval(timerRef.current);
+    }
+    return () => { if(timerRef.current) clearInterval(timerRef.current); };
+  },[autoPlay, playing, gameComplete, speed, executeStep]);
+
+  /* ── Cycle steps: when we reach increment, after a beat go back to condition ── */
+  useEffect(() => {
+    if(currentStep === 'increment' && playing) {
+      const t = setTimeout(() => setCurrentStep(null), autoPlay ? speed * 0.3 : 200);
+      return () => clearTimeout(t);
+    }
+  },[currentStep, playing, autoPlay, speed]);
+
+  /* ── When step resets to null and autoPlay, trigger next ── */
+  useEffect(() => {
+    if(currentStep === null && autoPlay && playing && !gameComplete) {
+      const t = setTimeout(() => executeStep(), 200);
+      return () => clearTimeout(t);
+    }
+  },[currentStep, autoPlay, playing, gameComplete, executeStep]);
+
+  /* ── Handlers ── */
+  const handleStart = () => {
+    if(gameComplete) { initGame(); return; }
+    setPlaying(true);
+    setAutoPlay(true);
+    AudioEngine.start();
+    if(!currentStep) executeStep();
+  };
+  const handleStep = () => {
+    if(gameComplete) return;
+    setPlaying(true);
+    setAutoPlay(false);
+    executeStep();
+  };
+  const handlePause = () => {
+    setAutoPlay(false);
+    if(voiceOn) Voice.stop();
+  };
+  const handleReset = () => initGame(totalBalloons);
+  const handleBalloonClick = (idx) => {
+    if(gameComplete || autoPlay) return;
+    if(idx === iteration - 1 && playing) {
+      executeStep();
+    }
+  };
+
+  /* ── Parse user code ── */
+  const handleRunCode = () => {
+    setCodeError('');
+    setCodeSuccess('');
+    const match = code.match(/i\s*<=?\s*(\d+)/);
+    if(!match) { setCodeError('Could not parse the loop limit. Use format: i <= NUMBER'); AudioEngine.error(); return; }
+    const num = parseInt(match[1]);
+    if(isNaN(num) || num < 1) { setCodeError('Number must be at least 1'); AudioEngine.error(); return; }
+    if(num > 30) { setCodeError('Maximum 30 balloons (keep it fun!)'); AudioEngine.error(); return; }
+    setCodeSuccess(`Loop will run ${num} times → ${num} balloons!`);
+    AudioEngine.success();
+    if(voiceOn) Voice.speak(`Great! The loop will now create ${num} balloons!`);
+    setTimeout(() => { initGame(num); setEditMode(false); }, 1500);
+  };
+
+  /* ── Challenge complete ── */
+  const handleChallengeComplete = (val) => {
+    setChallengeIdx(prev => prev + 1);
+    setShowChallenge(false);
+    initGame(val);
+  };
+
+  /* ── Mode switch ── */
+  const handleModeChange = (m) => {
+    setMode(m);
+    setChallengeIdx(0);
+    if(m === 'basic') initGame(10);
+    else if(m === 'custom') { initGame(10); setEditMode(true); }
+    else if(m === 'challenge') { initGame(10); }
+  };
+
+  const balloonsLeft = balloons.filter(b => !b.popped).length;
+
+  /* ══════════════════ RENDER ══════════════════ */
+  return React.createElement('div',{style:{display:'flex',height:'100vh',overflow:'hidden'}},
+
+    /* ════ LEFT: Beach Scene ════ */
+    React.createElement('div',{style:{flex:1,position:'relative',minWidth:0}},
+      React.createElement(BeachBG,null),
+
+      /* Title banner */
+      React.createElement('div',{style:{
+        position:'absolute',top:12,left:'50%',transform:'translateX(-50%)',zIndex:30,
+        background:'rgba(255,255,255,.92)',padding:'8px 20px',borderRadius:20,
+        boxShadow:'0 4px 20px rgba(0,0,0,.12)',textAlign:'center',backdropFilter:'blur(8px)'
+      }},
+        React.createElement('div',{style:{fontSize:16,fontWeight:800,color:'#2C3E50'}}, '🎈 Beach Balloon Loop Game'),
+        React.createElement('div',{style:{fontSize:11,color:'#888',marginTop:2}},
+          `Mode: ${mode==='basic'?'Basic (10)':mode==='custom'?'Custom':'Challenge'} | ${gameComplete?'Complete!':'Playing...'}`
+        )
+      ),
+
+      /* Balloons */
+      balloons.filter(b=>!b.popped).map((b,i) =>
+        React.createElement(Balloon,{
+          key:b.id, color:b.color, x:b.x, y:b.y, size:50,
+          popping:b.popping, delay:b.delay, label:b.label,
+          onClick:() => handleBalloonClick(b.id)
+        })
+      ),
+
+      React.createElement(Shopkeeper,{mood:shopMood, message:shopMsg}),
+      React.createElement(Player,{shooting}),
+
+      showConfetti && React.createElement(Confetti,null),
+
+      /* Iteration Log (bottom overlay) */
+      history.length > 0 && React.createElement('div',{style:{
+        position:'absolute',bottom:'14%',left:'50%',transform:'translateX(-50%)',zIndex:25,
+        background:'rgba(0,0,0,.7)',color:'#fff',padding:'6px 14px',borderRadius:12,
+        fontSize:12,fontFamily:'monospace',maxWidth:400,textAlign:'center',
+        animation:'fadeIn .3s ease',backdropFilter:'blur(4px)'
+      }},
+        history.slice(-1)[0]?.msg
+      )
+    ),
+
+    /* ════ RIGHT: Control Sidebar ════ */
+    React.createElement('div',{style:{
+      width:380,background:'linear-gradient(180deg,#f8f9fa,#e9ecef)',
+      borderLeft:'2px solid #dee2e6',display:'flex',flexDirection:'column',
+      overflow:'hidden'
+    }},
+      /* Sidebar scrollable content */
+      React.createElement('div',{style:{flex:1,overflowY:'auto',padding:14,display:'flex',flexDirection:'column',gap:12}},
+
+        /* ── Mode Selector ── */
+        React.createElement('div',{style:{display:'flex',gap:4,background:'#fff',padding:4,borderRadius:12,boxShadow:'0 2px 8px rgba(0,0,0,.06)'}},
+          [{id:'basic',label:'🎈 Basic',desc:'10 balloons'},{id:'custom',label:'✏️ Custom',desc:'Edit code'},{id:'challenge',label:'🧠 Challenge',desc:'Quizzes'}].map(m =>
+            React.createElement('button',{key:m.id,onClick:()=>handleModeChange(m.id),style:{
+              flex:1,padding:'8px 4px',border:'none',borderRadius:10,cursor:'pointer',
+              background:mode===m.id?'linear-gradient(135deg,#4A90D9,#357ABD)':'transparent',
+              color:mode===m.id?'#fff':'#666',fontWeight:700,fontSize:12,
+              transition:'all .2s',boxShadow:mode===m.id?'0 3px 10px rgba(74,144,217,.3)':'none'
+            }},
+              React.createElement('div',null, m.label),
+              React.createElement('div',{style:{fontSize:9,opacity:.8,marginTop:2}}, m.desc)
+            )
+          )
+        ),
+
+        /* ── Stats ── */
+        React.createElement(StatsHUD,{iteration, total:totalBalloons, score, balloonsLeft, speed}),
+
+        /* ── Flow Diagram ── */
+        React.createElement('div',{style:{background:'#fff',borderRadius:12,padding:12,boxShadow:'0 2px 8px rgba(0,0,0,.06)'}},
+          React.createElement('div',{style:{fontSize:13,fontWeight:700,color:'#2C3E50',marginBottom:8,display:'flex',alignItems:'center',gap:6}},
+            '🔄 Loop Flow Diagram',
+            currentStep && React.createElement('span',{style:{fontSize:10,background:STEP_COLORS[currentStep],color:'#fff',padding:'2px 8px',borderRadius:8}}, STEP_LABELS[currentStep])
+          ),
+          React.createElement(FlowDiagram,{currentStep, iteration, total:totalBalloons})
+        ),
+
+        /* ── Code Panel ── */
+        React.createElement('div',null,
+          React.createElement('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:6}},
+            React.createElement('span',{style:{fontSize:13,fontWeight:700,color:'#2C3E50'}}, '💻 Live Code'),
+            React.createElement('button',{onClick:()=>{setEditMode(!editMode);setCodeError('');setCodeSuccess('');AudioEngine.click();},style:{
+              padding:'4px 10px',background:editMode?'#e74c3c':'#3498db',color:'#fff',
+              border:'none',borderRadius:6,cursor:'pointer',fontSize:11,fontWeight:600
+            }}, editMode ? '✕ Cancel' : '✏️ Edit Code')
+          ),
+          React.createElement(CodePanel,{
+            total:totalBalloons, currentStep, iteration, editMode,
+            code, onCodeChange:setCode, onRunCode:handleRunCode,
+            codeError, codeSuccess
+          })
+        ),
+
+        /* ── Challenge Panel ── */
+        showChallenge && currentChallenge && (
+          currentChallenge.answer
+            ? React.createElement(ChallengePanel,{challenge:currentChallenge, onComplete:handleChallengeComplete})
+            : React.createElement('div',{style:{
+                background:'linear-gradient(135deg,#e8f8f5,#d5f5e3)',padding:14,borderRadius:14,
+                border:'2px solid #2ecc71',animation:'bounceIn .5s ease'
+              }},
+                React.createElement('div',{style:{fontSize:14,fontWeight:700,color:'#27ae60',marginBottom:8}}, '🎉 All Done!'),
+                React.createElement('div',{style:{fontSize:13,color:'#2C3E50',marginBottom:10}}, 'Try editing the code to change the number of balloons!'),
+                React.createElement('button',{onClick:()=>{setShowChallenge(false);setEditMode(true);AudioEngine.click();},style:{
+                  padding:'6px 16px',background:'linear-gradient(135deg,#3498db,#2980b9)',
+                  color:'#fff',border:'none',borderRadius:8,cursor:'pointer',fontWeight:700,fontSize:13
+                }}, '✏️ Edit the Loop')
+              )
+        ),
+
+        /* ── Controls ── */
+        React.createElement('div',{style:{background:'#fff',borderRadius:12,padding:12,boxShadow:'0 2px 8px rgba(0,0,0,.06)'}},
+          React.createElement('div',{style:{fontSize:13,fontWeight:700,color:'#2C3E50',marginBottom:8}}, '🎛️ Controls'),
+          React.createElement('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:6}},
+            React.createElement('button',{onClick:handleStart,style:{
+              padding:'10px 8px',border:'none',borderRadius:10,cursor:'pointer',fontWeight:700,fontSize:13,
+              background:gameComplete?'linear-gradient(135deg,#f39c12,#e67e22)':'linear-gradient(135deg,#2ecc71,#27ae60)',
+              color:'#fff',boxShadow:'0 3px 10px rgba(0,0,0,.15)',transition:'all .2s'
+            }}, gameComplete ? '🔄 New Game' : '▶ Auto Play'),
+            React.createElement('button',{onClick:handleStep,disabled:gameComplete,style:{
+              padding:'10px 8px',border:'none',borderRadius:10,cursor:gameComplete?'not-allowed':'pointer',fontWeight:700,fontSize:13,
+              background:gameComplete?'#ccc':'linear-gradient(135deg,#3498db,#2980b9)',
+              color:'#fff',boxShadow:'0 3px 10px rgba(0,0,0,.15)',opacity:gameComplete?.5:1
+            }}, '⏭ Step'),
+            React.createElement('button',{onClick:handlePause,style:{
+              padding:'10px 8px',border:'none',borderRadius:10,cursor:'pointer',fontWeight:700,fontSize:13,
+              background:'linear-gradient(135deg,#e74c3c,#c0392b)',color:'#fff',boxShadow:'0 3px 10px rgba(0,0,0,.15)'
+            }}, '⏸ Pause'),
+            React.createElement('button',{onClick:handleReset,style:{
+              padding:'10px 8px',border:'none',borderRadius:10,cursor:'pointer',fontWeight:700,fontSize:13,
+              background:'linear-gradient(135deg,#95a5a6,#7f8c8d)',color:'#fff',boxShadow:'0 3px 10px rgba(0,0,0,.15)'
+            }}, '🔄 Reset'),
+          ),
+          /* Speed + Voice */
+          React.createElement('div',{style:{display:'flex',gap:8,marginTop:8,alignItems:'center'}},
+            React.createElement('div',{style:{flex:1}},
+              React.createElement('div',{style:{fontSize:10,color:'#888',marginBottom:3,fontWeight:600}}, '⚡ Speed'),
+              React.createElement('div',{style:{display:'flex',gap:3}},
+                [{l:'Slow',v:2500},{l:'Normal',v:1500},{l:'Fast',v:700}].map(s =>
+                  React.createElement('button',{key:s.l,onClick:()=>setSpeed(s.v),style:{
+                    flex:1,padding:'3px 0',border:`1px solid ${speed===s.v?'#3498db':'#ddd'}`,
+                    borderRadius:6,fontSize:10,fontWeight:600,cursor:'pointer',
+                    background:speed===s.v?'#3498db':'#fff',color:speed===s.v?'#fff':'#666'
+                  }}, s.l)
+                )
+              )
+            ),
+            React.createElement('button',{onClick:()=>setVoiceOn(!voiceOn),style:{
+              padding:'8px 12px',border:'1px solid #ddd',borderRadius:8,cursor:'pointer',
+              background:voiceOn?'#3498db':'#fff',color:voiceOn?'#fff':'#666',fontSize:16,
+              transition:'all .2s'
+            }}, voiceOn ? '🔊' : '🔇')
+          )
+        ),
+
+        /* ── Step Legend ── */
+        React.createElement('div',{style:{background:'#fff',borderRadius:12,padding:10,boxShadow:'0 2px 8px rgba(0,0,0,.06)'}},
+          React.createElement('div',{style:{fontSize:12,fontWeight:700,color:'#2C3E50',marginBottom:6}}, '🎨 Step Legend'),
+          React.createElement('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:4}},
+            Object.entries(STEP_LABELS).map(([k,v]) =>
+              React.createElement('div',{key:k,style:{display:'flex',alignItems:'center',gap:5,fontSize:11}},
+                React.createElement('div',{style:{width:10,height:10,borderRadius:'50%',background:STEP_COLORS[k]}}),
+                React.createElement('span',{style:{color:'#555'}}, v)
+              )
+            )
+          )
+        ),
+
+        /* ── Iteration History ── */
+        history.length > 0 && React.createElement('div',{style:{background:'#fff',borderRadius:12,padding:10,boxShadow:'0 2px 8px rgba(0,0,0,.06)'}},
+          React.createElement('div',{style:{fontSize:12,fontWeight:700,color:'#2C3E50',marginBottom:6}}, '📜 Iteration Log'),
+          React.createElement('div',{style:{maxHeight:120,overflowY:'auto',fontSize:11,fontFamily:'monospace'}},
+            [...history].reverse().slice(0,20).map((h,i) =>
+              React.createElement('div',{key:i,style:{
+                padding:'3px 6px',borderRadius:4,marginBottom:2,
+                borderLeft:`3px solid ${STEP_COLORS[h.step]}`,
+                background: i===0 ? STEP_COLORS[h.step]+'11' : 'transparent',
+                color:'#555',animation: i===0 ? 'slideIn .3s ease' : 'none'
+              }}, h.msg)
+            )
+          )
+        ),
+      )
+    )
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(React.createElement(App));
+</script>
+</body>
+</html>
